@@ -30,6 +30,14 @@ python desk_pro_memory.py --csv candles.csv --market stocks --symbol AAPL --fee-
 
 The default starting equity for backtests is $10 virtual cash. Backtests use a long/flat EMA strategy and estimate transaction costs; they are not guarantees of real-world execution or profit.
 
+## Run tests
+
+```bash
+python -m unittest -v
+```
+
+GitHub Actions runs the unit tests on pushes and pull requests and checks that live mode remains blocked. Check the repository's **Actions** tab for the actual workflow result; adding the workflow does not itself mean the tests have passed.
+
 ## Persistent memory
 
 The local file `desk_pro_memory.sqlite3` stores observations, system events, strategy versions, and backtest metadata. Keep this database private if it contains personal or sensitive notes. Do not commit API credentials or account information.
