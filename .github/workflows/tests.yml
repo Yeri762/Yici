@@ -21,6 +21,11 @@ jobs:
           python-version: "3.12"
       - name: Run unit tests
         run: python -m unittest -v
+      - name: Smoke test demo runtime
+        run: |
+          python desk_pro_memory.py --demo --db /tmp/desk-pro-demo.sqlite3 > /tmp/desk-pro-demo.json
+          grep -q "DEMO MODE: prices are synthetic" /tmp/desk-pro-demo.json
+          grep -q "Research/backtest only" /tmp/desk-pro-demo.json
       - name: Verify live mode remains blocked
         shell: bash
         run: |
