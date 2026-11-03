@@ -21,10 +21,15 @@ jobs:
           python-version: "3.12"
       - name: Run unit tests
         run: python -m unittest -v
-      - name: Verify CLI safety lock
+      - name: Verify live mode remains blocked
+        shell: bash
         run: |
-          python desk_pro_memory.py --live
-          status=$?
+          if python desk_pro_memory.py --live; then
+            echo "ERROR: --live unexpectedly succeeded"
+            exit 1
+          else
+            status=$?
+          fi
           if [ "$status" -ne 2 ]; then
             echo "Expected --live to be blocked with exit code 2; got $status"
             exit 1
