@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 
 from desk_pro_memory import (
-    Candle, MemoryStore, RiskConfig, backtest, ema, risk_check,
+    Candle, MemoryStore, RiskConfig, backtest, ema, generate_demo_candles, risk_check,
 )
 
 
@@ -37,6 +37,20 @@ class CandleTests(unittest.TestCase):
         self.assertFalse(Candle("t", float("nan"), 12, 9, 11).valid())
 
 
+class DemoDataTests(unittest.TestCase):
+    def test_demo_candles_are_valid_and_deterministic(self):
+        first = generate_demo_candles(120)
+        second = generate_demo_candles(120)
+        self.assertEqual(len(first), 120)
+        self.assertEqual(first, second)
+        self.assertTrue(all(candle.valid() for candle in first))
+        self.assertIn("+00:00", first[0].timestamp)
+
+    def test_demo_requires_minimum_history(self):
+        with self.assertRaises(ValueError):
+            generate_demo_candles(99)
+
+
 class IndicatorTests(unittest.TestCase):
     def test_ema_length_and_first_value(self):
         result = ema([1.0, 2.0, 3.0], 2)
@@ -58,7 +72,7 @@ class RiskTests(unittest.TestCase):
 
     def test_drawdown_cutoff(self):
         config = RiskConfig(max_drawdown_fraction=0.10)
-        ok, message = risk_check(8.9, 10.0, 10.0, config)
+        ok, message = risk_check(8.9, 9.0, 10.0, config)
         self.assertFalse(ok)
         self.assertIn("drawdown", message.lower())
 
@@ -78,6 +92,14 @@ class BacktestTests(unittest.TestCase):
     def test_invalid_ema_pair_rejected(self):
         with self.assertRaises(ValueError):
             backtest(make_candles(), 24, 8, 10, 5, 5, 1)
+
+    def test_negative_cost_assumptions_rejected(self):
+        with self.assertRaises(ValueError):
+            backtest(make_candles(), 8, 24, -1, 5, 5, 1)
+
+    def test_nonpositive_initial_cash_rejected(self):
+        with self.assertRaises(ValueError):
+            backtest(make_candles(), 8, 24, 10, 5, 5, 1, initial_cash=0)
 
     def test_initial_cash_is_ten_by_default(self):
         result = backtest(make_candles(), 8, 24, 10, 5, 5, 1)

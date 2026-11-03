@@ -28,7 +28,7 @@ import statistics
 import sys
 import time
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Iterable, Optional
 
@@ -171,6 +171,29 @@ class MemoryStore:
         self.db.close()
 
 
+def generate_demo_candles(count: int = 360) -> list[Candle]:
+    """Create deterministic synthetic candles for a safe first-run demonstration.
+
+    These are fabricated prices, not live market data and not evidence of an edge.
+    """
+    if count < 100:
+        raise ValueError("Demo requires at least 100 candles")
+    rows: list[Candle] = []
+    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    previous = 100.0
+    for i in range(count):
+        close = 100.0 + 0.025 * i + 2.8 * math.sin(i / 11.0) + 1.1 * math.sin(i / 3.7)
+        open_price = previous
+        high = max(open_price, close) + 0.12
+        low = min(open_price, close) - 0.12
+        rows.append(Candle(
+            timestamp=(start + timedelta(minutes=15 * i)).isoformat(),
+            open=open_price, high=high, low=low, close=close, volume=1000.0
+        ))
+        previous = close
+    return rows
+
+
 def load_csv(path: Path) -> list[Candle]:
     candles: list[Candle] = []
     with path.open("r", newline="", encoding="utf-8-sig") as f:
@@ -226,13 +249,19 @@ def backtest(candles: list[Candle], fast: int, slow: int, fee_bps: float,
     """Long/flat EMA test. Orders fill after delay_bars at adverse estimated costs."""
     if fast >= slow or fast < 2 or delay_bars < 0:
         raise ValueError("Require fast < slow, fast >= 2, and nonnegative delay")
+    if initial_cash <= 0 or not math.isfinite(initial_cash):
+        raise ValueError("initial_cash must be finite and positive")
+    if any(not math.isfinite(x) or x < 0 for x in (fee_bps, spread_bps, slippage_bps)):
+        raise ValueError("fee, spread, and slippage assumptions must be finite and nonnegative")
     closes = [c.close for c in candles]
     ef, es = ema(closes, fast), ema(closes, slow)
     cash, qty, entry_price = initial_cash, 0.0, 0.0
     equity_peak, max_dd, fees_paid = initial_cash, 0.0, 0.0
     closed_pnls: list[float] = []
     pending: list[tuple[int, str]] = []
-    cost_rate = (fee_bps + spread_bps / 2 + slippage_bps) / 10000.0
+    # Spread/slippage affect fill prices. Fees are charged separately below;
+    # including fees in this rate would double-count them.
+    fill_cost_rate = (spread_bps / 2 + slippage_bps) / 10000.0
 
     for i in range(1, len(candles)):
         # Execute due orders at current bar open, never at the signal close.
@@ -241,7 +270,7 @@ def backtest(candles: list[Candle], fast: int, slow: int, fee_bps: float,
         for _, action in due:
             px = candles[i].open
             if action == "BUY" and qty == 0 and cash > 0:
-                fill = px * (1 + cost_rate)
+                fill = px * (1 + fill_cost_rate)
                 budget = cash * 0.95
                 qty = budget / fill
                 notional = qty * fill
@@ -250,7 +279,7 @@ def backtest(candles: list[Candle], fast: int, slow: int, fee_bps: float,
                 fees_paid += fee
                 entry_price = fill
             elif action == "SELL" and qty > 0:
-                fill = px * (1 - cost_rate)
+                fill = px * (1 - fill_cost_rate)
                 proceeds = qty * fill
                 fee = proceeds * fee_bps / 10000
                 pnl = proceeds - fee - (qty * entry_price)
@@ -261,17 +290,19 @@ def backtest(candles: list[Candle], fast: int, slow: int, fee_bps: float,
 
         # Signal is based only on information available at the previous close.
         if ef[i-1] is not None and es[i-1] is not None and ef[i] is not None and es[i] is not None:
-            if ef[i-1] <= es[i-1] and ef[i] > es[i] and qty == 0:
-                pending.append((i + delay_bars, "BUY"))
-            elif ef[i-1] >= es[i-1] and ef[i] < es[i] and qty > 0:
-                pending.append((i + delay_bars, "SELL"))
+            if (ef[i-1] <= es[i-1] and ef[i] > es[i] and qty == 0
+                    and not any(action == "BUY" for _, action in pending)):
+                pending.append((i + max(1, delay_bars), "BUY"))
+            elif (ef[i-1] >= es[i-1] and ef[i] < es[i] and qty > 0
+                    and not any(action == "SELL" for _, action in pending)):
+                pending.append((i + max(1, delay_bars), "SELL"))
 
         equity = cash + qty * candles[i].close
         equity_peak = max(equity_peak, equity)
         max_dd = max(max_dd, (equity_peak - equity) / equity_peak if equity_peak else 0.0)
 
     if qty > 0:
-        px = candles[-1].close * (1 - cost_rate)
+        px = candles[-1].close * (1 - fill_cost_rate)
         proceeds = qty * px
         fee = proceeds * fee_bps / 10000
         pnl = proceeds - fee - qty * entry_price
@@ -336,6 +367,8 @@ def risk_check(equity: float, day_start_equity: float, peak_equity: float,
 def main() -> int:
     parser = argparse.ArgumentParser(description=APP_NAME)
     parser.add_argument("--csv", type=Path, help="Historical OHLC CSV file")
+    parser.add_argument("--demo", action="store_true",
+                        help="Run a paper backtest on clearly labeled synthetic candles")
     parser.add_argument("--market", choices=("crypto", "stocks", "prediction15m"),
                         default="crypto")
     parser.add_argument("--symbol", default="DEMO")
@@ -359,17 +392,23 @@ def main() -> int:
 
     store = MemoryStore(args.db)
     try:
-        if not args.csv:
-            print("DESK PRO memory engine is ready, but no market data was supplied.")
-            print("Provide historical candles with --csv data.csv to run a backtest.")
-            print("No live market feed or real-money trading is connected.")
+        if args.csv and args.demo:
+            parser.error("choose either --csv or --demo, not both")
+        if not args.csv and not args.demo:
+            print("DESK PRO is ready, but no market data was supplied.")
+            print("Quick safe test: python desk_pro_memory.py --demo")
+            print("Historical backtest: python desk_pro_memory.py --csv candles.csv --market crypto --symbol BTC-USD")
+            print("This build does not fetch live market data or place real-money orders.")
             store.event("INFO", "Startup without data; no trading performed",
                         {"market": args.market, "symbol": args.symbol})
             return 0
-        candles = load_csv(args.csv)
-        store.observation(args.market, args.symbol, "Historical data loaded",
+        candles = generate_demo_candles() if args.demo else load_csv(args.csv)
+        data_label = "Synthetic demo candles (not live data)" if args.demo else "Historical CSV candles"
+        store.observation(args.market, args.symbol, data_label,
                           {"candles": len(candles), "first": candles[0].timestamp,
-                           "last": candles[-1].timestamp})
+                           "last": candles[-1].timestamp, "synthetic": args.demo})
+        if args.demo:
+            print("DEMO MODE: prices are synthetic and are not live market data.")
         result = choose_parameters(candles, store, args.fee_bps, args.spread_bps,
                                    args.slippage_bps, args.delay_bars)
         print(json.dumps(result, indent=2))
