@@ -72,7 +72,7 @@ class RiskTests(unittest.TestCase):
 
     def test_drawdown_cutoff(self):
         config = RiskConfig(max_drawdown_fraction=0.10)
-        ok, message = risk_check(8.9, 10.0, 10.0, config)
+        ok, message = risk_check(8.9, 9.0, 10.0, config)
         self.assertFalse(ok)
         self.assertIn("drawdown", message.lower())
 
